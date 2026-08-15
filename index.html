@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anydeal.Today — Service Status</title>
+<meta name="description" content="Current operational status for Anydeal.Today.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%2316a34a'/></svg>">
+<!--
+  ────────────────────────────────────────────────────────────────────────────
+  Anydeal.Today status page  ·  GNG-6 / OPS-3
+
+  DELIBERATELY SELF-CONTAINED. No CDN, no webfont, no external script, no
+  analytics. A status page that loads assets from somewhere else can fail with
+  that somewhere else — and this page exists precisely for the moments when
+  infrastructure is failing. Everything it needs is in this one file.
+
+  It is hosted on GitHub Pages, NOT on GCP, on purpose: a status page served by
+  the same load balancer it reports on goes down exactly when it is needed.
+
+  HOW TO UPDATE DURING AN INCIDENT -> see ./README.md. Short version: edit the
+  ONE block marked "EDIT DURING AN INCIDENT" below, commit, push. Pages
+  redeploys in ~1 minute.
+  ────────────────────────────────────────────────────────────────────────────
+-->
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f6f7f9; --border:#e3e6ea;
+    --fg:#16191d; --muted:#5c6570;
+    --ok:#16a34a; --degraded:#d97706; --down:#dc2626; --maint:#2563eb;
+    --shadow:0 1px 2px rgba(16,25,40,.06),0 4px 12px rgba(16,25,40,.05);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f1216; --panel:#161a20; --border:#262c34;
+      --fg:#e8ecf1; --muted:#98a2ae;
+      --ok:#22c55e; --degraded:#f59e0b; --down:#ef4444; --maint:#3b82f6;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 14px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1216; --panel:#161a20; --border:#262c34;
+    --fg:#e8ecf1; --muted:#98a2ae;
+    --ok:#22c55e; --degraded:#f59e0b; --down:#ef4444; --maint:#3b82f6;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 14px rgba(0,0,0,.3);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    padding:2rem 1.25rem 4rem;
+  }
+  .wrap{max-width:46rem;margin:0 auto}
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:2rem}
+  .brand{font-size:1.05rem;font-weight:650;letter-spacing:-.01em}
+  .brand span{color:var(--muted);font-weight:400}
+  h1{font-size:1.6rem;line-height:1.25;letter-spacing:-.02em;margin:0 0 .35rem}
+  .banner{
+    background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--tone,var(--ok));
+    border-radius:10px;padding:1.15rem 1.25rem;box-shadow:var(--shadow);margin-bottom:1.5rem;
+  }
+  .banner .dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--tone,var(--ok));display:inline-block;margin-right:.5rem;flex:none}
+  .banner .head{display:flex;align-items:center;font-weight:650;font-size:1.15rem;letter-spacing:-.01em}
+  .banner p{margin:.5rem 0 0;color:var(--muted)}
+  .stamp{color:var(--muted);font-size:.85rem;margin-top:.75rem}
+  h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:650;margin:2rem 0 .75rem}
+  ul.svc{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--panel)}
+  ul.svc li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.8rem 1.1rem;border-top:1px solid var(--border)}
+  ul.svc li:first-child{border-top:0}
+  ul.svc .name{font-weight:500}
+  ul.svc .state{display:flex;align-items:center;gap:.45rem;color:var(--muted);font-size:.9rem;white-space:nowrap}
+  ul.svc .state i{width:.55rem;height:.55rem;border-radius:50%;background:var(--tone,var(--ok));display:inline-block;font-style:normal}
+  .inc{border:1px solid var(--border);border-radius:10px;background:var(--panel);padding:1rem 1.15rem;margin-bottom:.75rem}
+  .inc h3{margin:0 0 .3rem;font-size:1rem;letter-spacing:-.01em}
+  .inc time{color:var(--muted);font-size:.85rem}
+  .inc p{margin:.5rem 0 0;color:var(--muted)}
+  .none{color:var(--muted);border:1px dashed var(--border);border-radius:10px;padding:1.1rem;text-align:center}
+  footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--border);color:var(--muted);font-size:.85rem}
+  footer a{color:inherit}
+  @media (max-width:30rem){ body{padding:1.25rem 1rem 3rem} h1{font-size:1.35rem} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">Anydeal<span>.Today</span></div>
+    <div class="brand"><span>Service status</span></div>
+  </header>
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       EDIT DURING AN INCIDENT — everything you need to change is between here
+       and the matching END marker.
+
+       Set the tone by swapping the --tone value on .banner:
+         var(--ok)        all systems operational
+         var(--degraded)  degraded / partial
+         var(--down)      major outage
+         var(--maint)     planned maintenance
+
+       Wording templates live in the runbook §8:
+       anydeal-today-brain/docs/050-Ops/Incident-Response-Runbook.md
+       ══════════════════════════════════════════════════════════════════════ -->
+
+  <section class="banner" style="--tone:var(--ok)">
+    <div class="head"><span class="dot"></span>All systems operational</div>
+    <p>There are no known issues affecting the platform.</p>
+    <div class="stamp">Last updated 14 August 2026, 14:30 AEST</div>
+  </section>
+
+  <h2>Components</h2>
+  <ul class="svc">
+    <li><span class="name">Shop owner &amp; advertiser dashboard</span><span class="state"><i style="--tone:var(--ok)"></i>Operational</span></li>
+    <li><span class="name">API &amp; sign-in</span><span class="state"><i style="--tone:var(--ok)"></i>Operational</span></li>
+    <li><span class="name">Payments &amp; billing</span><span class="state"><i style="--tone:var(--ok)"></i>Operational</span></li>
+    <li><span class="name">In-store screens</span><span class="state"><i style="--tone:var(--ok)"></i>Operational</span></li>
+  </ul>
+
+  <h2>Recent incidents</h2>
+  <div class="none">No incidents reported in the last 30 days.</div>
+
+  <!-- ══════════════════ END — EDIT DURING AN INCIDENT ══════════════════ -->
+
+  <footer>
+    Times are Australian Eastern Time. For help with your account, contact
+    <a href="mailto:admin@anysale.com.au">admin@anysale.com.au</a>.
+  </footer>
+
+</div>
+</body>
+</html>
