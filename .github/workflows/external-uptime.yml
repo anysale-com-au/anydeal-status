@@ -1,0 +1,65 @@
+# Off-GCP prod outage alarm (Trello LVfnvPAn).
+#
+# 2026-10-09: the GCP billing account was closed and every service in BOTH
+# projects returned 503. Cloud Monitoring uptime checks live inside GCP and die
+# with the billing account, so this probe runs on GitHub Actions instead (public
+# repo => Actions minutes are free; A$0/mo).
+#
+# Logic + tests: .github/scripts/external-uptime.sh / test-external-uptime.sh.
+# Forced-failure test and caveats: README.md.
+name: External uptime (off-GCP)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # probe
+    - cron: "17 3 1 * *"    # monthly keepalive (see keepalive job)
+  workflow_dispatch:
+    inputs:
+      force_failure:
+        description: "Add an endpoint that can never answer, to prove the alarm opens an issue (the next normal run closes it)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+# One probe at a time, never cancelled mid-run: two overlapping runs could
+# both see "no open issue" and open duplicates.
+concurrency:
+  group: external-uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Probe prod endpoints and manage the outage issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_FAILURE: ${{ inputs.force_failure && 'true' || 'false' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .github/scripts/external-uptime.sh
+
+  # GitHub disables scheduled workflows in a repo with no activity for 60 days.
+  # This status repo changes rarely, so without this the alarm would silently
+  # stop. Re-enabling the workflow via the API once a month resets that clock
+  # without keepalive commits. Caveat: if the workflow is ALREADY disabled this
+  # job cannot run either — re-enable it by hand (README.md).
+  keepalive:
+    if: github.event.schedule == '17 3 1 * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow (resets the 60-day inactivity timer)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/external-uptime.yml/enable"
