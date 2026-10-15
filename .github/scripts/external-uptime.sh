@@ -9,6 +9,7 @@
 # Behaviour (one run):
 #   1. Probe every endpoint: up to ATTEMPTS tries, sleeping BACKOFF_SECONDS
 #      between tries (anti-flap), TIMEOUT seconds each. 2xx/3xx = up.
+#      An entry written `URL|403` also accepts 403 as "edge-up" (see below).
 #   2. Something down + no open `outage` issue  -> open one (mentions $MENTION).
 #      Something down + open issue, same set    -> do nothing (no spam).
 #      Something down + open issue, set changed -> comment with the new set.
@@ -19,7 +20,8 @@
 # when the alarm itself could not talk to GitHub, so a broken alarm is visible.
 #
 # Env (all optional except GITHUB_REPOSITORY / GH_TOKEN in CI):
-#   ENDPOINTS        space-separated URLs   (default: api /healthz + apex)
+#   ENDPOINTS        space-separated `URL` or `URL|<code>,<code>` entries;
+#                    extra codes count as edge-up (default: API health + apex)
 #   ATTEMPTS         tries per endpoint     (default 3)
 #   BACKOFF_SECONDS  sleeps between tries   (default "10 20")
 #   TIMEOUT          per-try seconds        (default 15)
@@ -28,7 +30,17 @@
 #   RUN_URL          link to this run, put in the issue
 set -uo pipefail
 
-ENDPOINTS="${ENDPOINTS:-https://api.anydeal.today/healthz https://anydeal.today/}"
+# Targets (verified 2026-10-15 against the prod URL map + Cloud Armor):
+#  - au.api.anydeal.today/api/health: canonical deep health (mongo + redis),
+#    api-backend-service, NOT geo-fenced -> must be 2xx/3xx from anywhere.
+#  - anydeal.today/: prod-global-backend-service behind Cloud Armor
+#    `phased-rollout-policy` (allow AU/NZ/IN, default deny(403)). GitHub-hosted
+#    runners are outside AU, so they always get Cloud Armor's 403. A 403 still
+#    proves DNS + TLS + the LB are serving ("edge-up"); the billing-closure
+#    symptom (2026-10-09) is a 503 at the LB, which stays DOWN. Blind spot: a
+#    broken frontend Cloud Run behind the fence is NOT visible from here.
+#    Do not add a Cloud Armor allow rule for the runners to "fix" that.
+ENDPOINTS="${ENDPOINTS:-https://au.api.anydeal.today/api/health https://anydeal.today/|403}"
 ATTEMPTS="${ATTEMPTS:-3}"
 BACKOFF_SECONDS="${BACKOFF_SECONDS:-10 20}"
 TIMEOUT="${TIMEOUT:-15}"
@@ -48,9 +60,11 @@ fi
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# probe URL -> prints "<last_http_code> <utc_timestamp>"; returns 0 if up.
+# probe URL [EXTRA_CODES] -> prints "<last_http_code> <utc_timestamp>";
+# returns 0 if up (2xx/3xx), 3 if edge-up (code in comma-list EXTRA_CODES),
+# 1 if down. An accepted code ends the retries like a 2xx does.
 probe() {
-  local url="$1" code="000" i sleeps
+  local url="$1" extra=",${2:-}," code="000" i sleeps
   read -r -a sleeps <<<"$BACKOFF_SECONDS"
   for ((i = 1; i <= ATTEMPTS; i++)); do
     code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$TIMEOUT" \
@@ -59,6 +73,10 @@ probe() {
     if [[ "$code" -ge 200 && "$code" -lt 400 ]]; then
       echo "$code $(now)"
       return 0
+    fi
+    if [[ "$extra" == *",$code,"* ]]; then
+      echo "$code $(now)"
+      return 3
     fi
     if ((i < ATTEMPTS)); then
       sleep "${sleeps[$((i - 1))]:-${sleeps[${#sleeps[@]} - 1]:-0}}"
@@ -70,8 +88,15 @@ probe() {
 
 failing=()   # URLs that are down
 table=""     # markdown rows for every endpoint
-for url in $ENDPOINTS; do
-  if result=$(probe "$url"); then state="up"; else state="DOWN"; failing+=("$url"); fi
+for entry in $ENDPOINTS; do
+  url="${entry%%|*}"; extra=""
+  [[ "$entry" == *"|"* ]] && extra="${entry#*|}"
+  result=$(probe "$url" "$extra"); rc=$?
+  case $rc in
+    0) state="up" ;;
+    3) state="edge-up" ;;
+    *) state="DOWN"; failing+=("$url") ;;
+  esac
   read -r code ts <<<"$result"
   table+="| \`$url\` | $state | $code | $ts |"$'\n'
   echo "$state $code $ts $url"

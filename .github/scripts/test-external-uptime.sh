@@ -2,7 +2,8 @@
 # .github/scripts/test-external-uptime.sh — local test harness for external-uptime.sh.
 #
 # No network, no GitHub: a tiny python HTTP server on a random localhost port
-# plays the endpoints (/ok -> 200, /down -> 503, /flaky -> 503 twice then 200),
+# plays the endpoints (/ok -> 200, /down -> 503, /flaky -> 503 twice then 200,
+# /forbidden -> 403 like the Cloud Armor geo-fence on the apex),
 # and a fake `gh` on PATH records every call and keeps one issue's state in a
 # temp dir. Run:  bash .github/scripts/test-external-uptime.sh
 set -uo pipefail
@@ -23,6 +24,7 @@ class H(http.server.BaseHTTPRequestHandler):
         hits[self.path] = hits.get(self.path, 0) + 1
         with open(sys.argv[1], "a") as f: f.write(self.path + "\n")
         if self.path == "/ok": code = 200
+        elif self.path == "/forbidden": code = 403
         elif self.path == "/flaky": code = 503 if hits[self.path] <= 2 else 200
         else: code = 503
         self.send_response(code); self.end_headers()
@@ -36,6 +38,7 @@ SRV_PID=$!
 for _ in $(seq 50); do [[ -s "$WORK/port" ]] && break; python3 -c 'import time; time.sleep(0.1)'; done
 PORT=$(cat "$WORK/port")
 OK="http://127.0.0.1:$PORT/ok"; DOWN="http://127.0.0.1:$PORT/down"; DOWN2="http://127.0.0.1:$PORT/down2"
+FORBIDDEN="http://127.0.0.1:$PORT/forbidden"
 
 # ── fake gh ─────────────────────────────────────────────────────────────────
 mkdir -p "$WORK/bin"
@@ -124,6 +127,36 @@ check "marked as a forced test" 'grep -q "FORCED-FAILURE TEST" "$WORK/state/crea
 check "title names the forced endpoint" 'grep -qF "127.0.0.1:9/forced-failure-test" "$WORK/state/title"'
 run "$OK"
 check "next normal run closes it" '[[ $(calls close) -eq 1 ]]'
+
+echo "=== apex behind Cloud Armor: 403 with |403 suffix -> edge up, no issue ==="
+: >"$WORK/hits"; reset_state; run "$OK $FORBIDDEN|403"; rc=$?
+check "exit 0" '[[ $rc -eq 0 ]]'
+check "no issue for a geo-fence 403" '[[ $(calls create) -eq 0 ]]'
+check "reported as edge-up with code 403" 'grep -qE "^edge-up 403 [0-9T:-]+Z $FORBIDDEN$" "$WORK/out"'
+check "accepted 403 is not retried" '[[ $(grep -c "^/forbidden$" "$WORK/hits") -eq 1 ]]'
+
+echo "=== 403 WITHOUT the suffix -> still DOWN (strict by default) ==="
+reset_state; run "$FORBIDDEN"
+check "issue created" '[[ $(calls create) -eq 1 ]]'
+check "code 403 recorded" 'grep -qE "\| DOWN \| 403 \|" "$WORK/state/created_body"'
+
+echo "=== edge endpoint answering 503 (billing closure at the LB) -> DOWN ==="
+: >"$WORK/hits"; reset_state; run "$OK $DOWN|403"
+check "issue created" '[[ $(calls create) -eq 1 ]]'
+check "title shows the bare URL, not the |403 suffix" 'grep -qF "🔴 PROD DOWN — $DOWN" "$WORK/state/title" && ! grep -qF "|403" "$WORK/state/title"'
+check "503 recorded" 'grep -qE "\| DOWN \| 503 \|" "$WORK/state/created_body"'
+check "503 retried 3 times" '[[ $(grep -c "^/down$" "$WORK/hits") -eq 3 ]]'
+run "$OK $DOWN|403"
+check "same set next run -> no comment (marker uses bare URL)" '[[ $(calls comment) -eq 0 ]]'
+run "$OK $FORBIDDEN|403"
+check "back to 403 -> recovered + closed" '[[ $(calls close) -eq 1 ]] && grep -q "Recovered" "$WORK/state/last_comment"'
+
+echo "=== default targets: canonical API health + apex as edge-only ==="
+defaults=$(sed -n 's/^ENDPOINTS="\${ENDPOINTS:-\(.*\)}"$/\1/p' "$SCRIPT")
+check "primary is au.api.anydeal.today/api/health" '[[ " $defaults " == *" https://au.api.anydeal.today/api/health "* ]]'
+check "apex accepts the Cloud Armor 403" '[[ " $defaults " == *" https://anydeal.today/|403 "* ]]'
+check "api.anydeal.today/healthz no longer probed" '[[ "$defaults" != *"/healthz"* ]]'
+check "no target outside AU-fenced apex accepts 403" '[[ $(grep -o "|403" <<<"$defaults" | wc -l) -eq 1 ]]'
 
 echo "=== gh failure -> non-zero exit (broken alarm is visible) ==="
 reset_state; chmod -x "$WORK/bin/gh"

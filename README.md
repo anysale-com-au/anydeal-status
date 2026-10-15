@@ -29,8 +29,9 @@ somewhere else can fail with that somewhere else.
 
 ## Off-GCP outage alarm (`.github/workflows/external-uptime.yml`)
 
-Every 5 minutes GitHub Actions probes `https://api.anydeal.today/healthz` and
-`https://anydeal.today/`. Each endpoint gets 3 attempts with backoff (10 s, then
+Every 5 minutes GitHub Actions probes `https://au.api.anydeal.today/api/health`
+(the canonical API health check: Mongo + Redis, not geo-fenced) and
+`https://anydeal.today/` (edge only, see the caveat on Cloud Armor). Each endpoint gets 3 attempts with backoff (10 s, then
 20 s) and a 15 s timeout per attempt, so a single blip does not alert. If an
 endpoint is still down, the workflow opens one issue labelled `outage`, titled
 `🔴 PROD DOWN — <endpoint>`, and @-mentions `anysaleau`, so GitHub sends an
@@ -67,3 +68,12 @@ opens and you get the mention. The next scheduled run, about 5 minutes later
   endpoint URLs, HTTP codes and timestamps. Never add internal details to them
   by hand.
 - The alarm runs on GitHub. If GitHub itself is down, it stays silent.
+- **The apex is only checked at the edge.** `anydeal.today` sits behind the
+  Cloud Armor policy `phased-rollout-policy` (allow AU/NZ/IN, default
+  `deny(403)`). GitHub-hosted runners are outside Australia, so they always get
+  that 403. The apex entry is `https://anydeal.today/|403`: a 403 counts as
+  *edge-up* (DNS, TLS and the load balancer are answering), and anything else
+  that isn't 2xx/3xx is DOWN. That includes the 503 the load balancer returned
+  when billing closed. The trade-off is that a broken frontend behind the fence
+  is invisible from here. The API check covers the backend. **Do not add a
+  Cloud Armor allow rule for the runners.**
